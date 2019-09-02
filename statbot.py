@@ -67,7 +67,7 @@ class StatBot(Client):
     await self.analyze(guild, month, _time, status)
     res = "```"
     for (h, m), count in sorted(times.items(), key=lambda kv: kv[0][0] * 10 + kv[0][1]):
-      res += "{}:{}0 {}\n".format(h, m, "#" * math.ceil(count / 30))
+      res += "{}:{}0 {}\n".format(h, m, "#" * math.ceil(count / 10))
     return res + "```"
 
   async def userStats(self, guild, month, status=None):
