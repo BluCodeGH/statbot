@@ -1,7 +1,7 @@
 import math
 import datetime
-from discord import Client
-from dctoken import token
+from discord import Client, AuditLogAction
+from dctoken import token, owner
 
 class StatBot(Client):
   def __init__(self, *args):
@@ -17,7 +17,9 @@ class StatBot(Client):
     print("Connected as " + str(self.user))
 
   async def on_message(self, m):
-    if m.author.id == 207648732336881664 and m.content == "!quit":
+    if m.author == self.user:
+      return
+    if m.author.id == owner and m.content == "!quit":
       await self.logout()
     if "stats canada" in [r.name for r in m.author.roles] and m.content.startswith("!"):
       command, *args = m.content.strip().split()
@@ -116,5 +118,18 @@ class StatBot(Client):
     for channel, count in sorted(channels.items(), key=lambda kv: kv[1], reverse=True):
       res += "{}: {}\n".format(channel.mention, count)
     return res
+
+  async def on_raw_message_delete(self, payload):
+    g = self.get_guild(payload.guild_id)
+    entry = (await g.audit_logs(limit=1).flatten())[0]
+    if entry.action == AuditLogAction.message_delete and entry.user.id != owner:
+      channel = self.get_channel(payload.channel_id)
+      if payload.cached_message:
+        m = payload.cached_message.content + " "
+      else:
+        m = ""
+      user = entry.user
+      message = "User {} deleted message {}in channel {}.".format(user.mention, m, channel.mention)
+      await self.get_user(owner).send(message)
 
 StatBot().run(token)
