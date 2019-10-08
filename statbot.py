@@ -190,6 +190,9 @@ class StatBot(Client):
         text += f"{emote} : `{role.name}`\n"
         data[emote] = role.id
       await message.edit(content=text)
+      for emote in self.reaction_roles[message_id].keys():
+        if emote != "channel":
+          await message.remove_reaction(emote, self.user)
       for emote in data.keys():
         if emote != "channel":
           await message.add_reaction(emote)
