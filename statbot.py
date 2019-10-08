@@ -1,5 +1,8 @@
-import math
+import asyncio
 import datetime
+import json
+import math
+import re
 from discord import Client, AuditLogAction
 from dctoken import token, owner
 
@@ -12,15 +15,28 @@ class StatBot(Client):
         "!times": self.timeStats,
         "!count": self.count
     }
+    try:
+      with open("reaction_roles.json") as f:
+        self.reaction_roles = json.load(f)
+    except FileNotFoundError:
+      with open("reaction_roles.json", "w+") as f:
+        f.write("{}")
+      self.reaction_roles = {}
 
   async def on_ready(self):
     print("Connected as " + str(self.user))
+    await self.monitor()
 
   async def on_message(self, m):
     if m.author == self.user:
       return
-    if m.author.id == owner and m.content == "!quit":
-      await self.logout()
+    if m.author.id == owner:
+      if m.content == "!quit":
+        return await self.logout()
+      if m.content.startswith("!rr"):
+        return await self.rr(m)
+      if m.content.startswith("!exec"):
+        return await self.exec(m)
     if "stats canada" in [r.name for r in m.author.roles] and m.content.startswith("!"):
       command, *args = m.content.strip().split()
       try:
@@ -119,6 +135,98 @@ class StatBot(Client):
       res += "{}: {}\n".format(channel.mention, count)
     return res
 
+  async def monitor(self):
+    while True:
+      time = datetime.datetime.utcnow() - datetime.timedelta(minutes=5)
+      for guild in self.guilds:
+        async for audit in guild.audit_logs(limit=10):
+          if audit.created_at < time:
+            break
+          if audit.user.id != owner and audit.user != audit.target and not audit.user.bot:
+            if hasattr(audit.target, "mention"):
+              target = audit.target.mention
+            else:
+              target = audit.target
+            message = "User {} triggered {} on {}.".format(audit.user.mention, audit.action, target)
+            await self.get_user(owner).send(message)
+      await asyncio.sleep(5*60)
+
+  async def rr(self, m):
+    s = m.content.split()
+    subcmd = s[1]
+    if subcmd == "new":
+      title = s[2]
+      text = f"**{title}**\n"
+      data = {"channel": m.channel.id}
+      for i in range((len(s) - 3) // 2):
+        emote, role = s[i * 2 + 3], s[i * 2 + 4]
+        role = [r for r in m.guild.roles if r.name == role]
+        if not role:
+          return await m.channel.send("Invalid role {}".format(s[i + 4]))
+        role = role[0]
+        text += f"{emote} : `{role.name}`\n"
+        data[emote] = role.id
+      message = await m.channel.send(text[:-1])
+      for emote in data.keys():
+        if emote != "channel":
+          await message.add_reaction(emote)
+      self.reaction_roles[str(message.id)] = data
+      with open("reaction_roles.json", "w") as f:
+        f.write(json.dumps(self.reaction_roles))
+    if subcmd == "edit":
+      message_id = s[2]
+      if message_id not in self.reaction_roles:
+        return await m.channel.send("Invalid message ID.")
+      channel = self.reaction_roles[message_id]["channel"]
+      message = await self.get_channel(channel).fetch_message(int(message_id))
+      data = {"channel": channel}
+      text = message.content.split("\n")[0] + "\n"
+      for i in range((len(s) - 3) // 2):
+        emote, role = s[i * 2 + 3], s[i * 2 + 4]
+        role = [r for r in m.guild.roles if r.name == role]
+        if not role:
+          return await m.channel.send("Invalid role {}".format(s[i + 4]))
+        role = role[0]
+        text += f"{emote} : `{role.name}`\n"
+        data[emote] = role.id
+      await message.edit(content=text)
+      for emote in data.keys():
+        if emote != "channel":
+          await message.add_reaction(emote)
+      self.reaction_roles[str(message.id)] = data
+      with open("reaction_roles.json", "w") as f:
+        f.write(json.dumps(self.reaction_roles))
+
+  async def on_raw_reaction_add(self, payload):
+    if str(payload.message_id) not in self.reaction_roles:
+      return
+    data = self.reaction_roles[str(payload.message_id)]
+    if payload.emoji.is_custom_emoji():
+      emote = "<:{}:{}>".format(payload.emoji.name, payload.emoji.id)
+    else:
+      emote = payload.emoji.name
+    if emote in data:
+      g = self.get_guild(payload.guild_id)
+      user = g.get_member(payload.user_id)
+      role = g.get_role(data[emote])
+      if role not in user.roles:
+        await user.add_roles(role)
+
+  async def on_raw_reaction_remove(self, payload):
+    if str(payload.message_id) not in self.reaction_roles:
+      return
+    data = self.reaction_roles[str(payload.message_id)]
+    if payload.emoji.is_custom_emoji():
+      emote = "<:{}:{}>".format(payload.emoji.name, payload.emoji.id)
+    else:
+      emote = payload.emoji.name
+    if emote in data:
+      g = self.get_guild(payload.guild_id)
+      user = g.get_member(payload.user_id)
+      role = g.get_role(data[emote])
+      if role in user.roles:
+        await user.remove_roles(role)
+
   async def on_raw_message_delete(self, payload):
     g = self.get_guild(payload.guild_id)
     entry = (await g.audit_logs(limit=1).flatten())[0]
@@ -131,5 +239,17 @@ class StatBot(Client):
       user = entry.user
       message = "User {} deleted message {}in channel {}.".format(user.mention, m, channel.mention)
       await self.get_user(owner).send(message)
+
+  async def on_member_join(self, member):
+    a = [r for r in member.guild.roles if r.name == "all"][0]
+    await member.add_roles(a)
+
+  async def exec(self, m):
+    cmd = m.content
+    if "```" in cmd:
+      cmd = re.search(r"```([\s\S]*)```", cmd).group(1)
+    cmd = "async def __exec(m):\n" + cmd.replace("\n", "\n  ")
+    exec(cmd)
+    await locals()["__exec"](m)
 
 StatBot().run(token)
